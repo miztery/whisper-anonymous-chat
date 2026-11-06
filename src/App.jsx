@@ -29,8 +29,27 @@ const DEFAULT_ROOMS = [
   { id: "interests", name: "Interests", description: "Talk about what you love", icon: "✨" },
 ];
 
+const BUILT_IN_AVATARS = [
+  { id: "fox", emoji: "🦊" },
+  { id: "panda", emoji: "🐼" },
+  { id: "cat", emoji: "🐱" },
+  { id: "frog", emoji: "🐸" },
+  { id: "tiger", emoji: "🐯" },
+  { id: "koala", emoji: "🐨" },
+  { id: "owl", emoji: "🦉" },
+  { id: "rabbit", emoji: "🐰" },
+  { id: "bear", emoji: "🐻" },
+  { id: "wolf", emoji: "🐺" },
+  { id: "butterfly", emoji: "🦋" },
+  { id: "octopus", emoji: "🐙" },
+];
+
 function cleanUsername(value) {
   return value.trim().replace(/^@/, "").toLowerCase();
+}
+
+function getAvatarEmoji(avatarId) {
+  return BUILT_IN_AVATARS.find((avatar) => avatar.id === avatarId)?.emoji || "🌙";
 }
 
 function friendlyError(error) {
@@ -41,22 +60,274 @@ function friendlyError(error) {
     "auth/invalid-credential": "Email or password is incorrect.",
     "auth/popup-closed-by-user": "The Google sign-in window was closed.",
     "auth/popup-blocked": "Your browser blocked the sign-in popup. Allow popups and try again.",
-    "permission-denied": "Firebase denied this action. Check your Firestore rules and the permissions for this operation.",
+    "permission-denied": "Firebase denied this action. Check that your updated Firestore rules are published.",
   };
 
   return known[error?.code] || error?.message || "Something went wrong. Please try again.";
 }
 
-function Avatar({ name = "Anonymous", small = false }) {
+function Avatar({ name = "Anonymous", avatarId, small = false }) {
+  const emoji = BUILT_IN_AVATARS.find((avatar) => avatar.id === avatarId)?.emoji;
+
   const initials = name.replace(/^@/, "").slice(0, 1).toUpperCase() || "A";
 
   return (
-    <span className={`avatar ${small ? "avatar-small" : ""}`}>
-      {initials}
+    <span className={`avatar ${small ? "avatar-small" : ""} ${emoji ? "avatar-emoji" : ""}`}>
+      {emoji || initials}
     </span>
   );
 }
 
+// CREATE A NEW USER PROFILE
+async function createUserProfile(uid, username) {
+  const normalized = cleanUsername(username);
+
+  if (!/^[a-z0-9_]{3,20}$/.test(normalized)) {
+    throw new Error(
+      "Choose a username with 3–20 letters, numbers, or underscores."
+    );
+  }
+
+  const profileRef = doc(db, "profiles", uid);
+  const usernameRef = doc(db, "usernames", normalized);
+
+  await runTransaction(db, async (transaction) => {
+    const existing = await transaction.get(usernameRef);
+
+    if (existing.exists()) {
+      throw new Error("That username is already taken. Please choose another.");
+    }
+
+    transaction.set(usernameRef, {
+      uid,
+      createdAt: serverTimestamp(),
+    });
+
+    transaction.set(profileRef, {
+      uid,
+      username: normalized,
+      displayName: `@${normalized}`,
+      avatarSeed: normalized.slice(0, 1).toUpperCase(),
+      avatarId: "fox",
+      bio: "",
+      createdAt: serverTimestamp(),
+    });
+  });
+}
+
+// PROFILE SETTINGS MODAL
+function ProfileSettings({ user, profile, onClose, onSaved }) {
+  const [username, setUsername] = useState(profile.username || "");
+  const [avatarId, setAvatarId] = useState(profile.avatarId || "fox");
+  const [bio, setBio] = useState(profile.bio || "");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const [success, setSuccess] = useState("");
+
+  async function saveProfile(event) {
+    event.preventDefault();
+
+    setError("");
+    setSuccess("");
+
+    const normalized = cleanUsername(username);
+
+    if (!/^[a-z0-9_]{3,20}$/.test(normalized)) {
+      setError("Username must be 3–20 characters using only letters, numbers, or underscores.");
+      return;
+    }
+
+    if (bio.length > 160) {
+      setError("Your bio cannot exceed 160 characters.");
+      return;
+    }
+
+    if (!BUILT_IN_AVATARS.some((avatar) => avatar.id === avatarId)) {
+      setError("Please select a valid built-in avatar.");
+      return;
+    }
+
+    setBusy(true);
+
+    try {
+      const profileRef = doc(db, "profiles", user.uid);
+      const oldUsername = cleanUsername(profile.username || "");
+      const newUsernameRef = doc(db, "usernames", normalized);
+      const oldUsernameRef = oldUsername
+        ? doc(db, "usernames", oldUsername)
+        : null;
+
+      await runTransaction(db, async (transaction) => {
+        // Read all required documents before writing.
+        const newUsernameSnap = await transaction.get(newUsernameRef);
+
+        let oldUsernameSnap = null;
+
+        if (oldUsernameRef && oldUsername !== normalized) {
+          oldUsernameSnap = await transaction.get(oldUsernameRef);
+        }
+
+        if (normalized !== oldUsername && newUsernameSnap.exists()) {
+          const reservationOwner = newUsernameSnap.data().uid;
+
+          if (reservationOwner !== user.uid) {
+            throw new Error("That username is already taken. Please choose another.");
+          }
+        }
+
+        if (normalized !== oldUsername) {
+          if (oldUsernameSnap?.exists() && oldUsernameSnap.data().uid === user.uid) {
+            transaction.delete(oldUsernameRef);
+          }
+
+          if (!newUsernameSnap.exists()) {
+            transaction.set(newUsernameRef, {
+              uid: user.uid,
+              createdAt: serverTimestamp(),
+            });
+          }
+        }
+
+        transaction.update(profileRef, {
+          username: normalized,
+          displayName: `@${normalized}`,
+          avatarSeed: normalized.slice(0, 1).toUpperCase(),
+          avatarId,
+          bio: bio.trim(),
+        });
+      });
+
+      // Keep Firebase Auth's display name consistent.
+      await updateProfile(user, {
+        displayName: normalized,
+      }).catch(() => {});
+
+      setSuccess("Your profile has been updated successfully.");
+
+      if (onSaved) {
+        onSaved();
+      }
+
+      window.setTimeout(() => {
+        onClose();
+      }, 700);
+    } catch (err) {
+      setError(friendlyError(err));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div className="profile-modal-backdrop" onMouseDown={onClose}>
+      <section
+        className="profile-modal"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="profile-settings-title"
+        onMouseDown={(event) => event.stopPropagation()}
+      >
+        <div className="profile-modal-header">
+          <div>
+            <div className="eyebrow">YOUR ACCOUNT</div>
+            <h2 id="profile-settings-title">Profile Settings</h2>
+            <p>Customize how other people see you on Whisper.</p>
+          </div>
+
+          <button
+            type="button"
+            className="icon-button"
+            onClick={onClose}
+            aria-label="Close profile settings"
+          >
+            ×
+          </button>
+        </div>
+
+        <form onSubmit={saveProfile}>
+          <div className="profile-preview">
+            <Avatar name={username || "Anonymous"} avatarId={avatarId} />
+
+            <div>
+              <strong>@{cleanUsername(username) || "yourusername"}</strong>
+              <span>{bio.trim() || "No bio added yet."}</span>
+            </div>
+          </div>
+
+          <label className="profile-field">
+            Username
+            <input
+              value={username}
+              onChange={(event) => setUsername(event.target.value)}
+              placeholder="Enter your username"
+              minLength={3}
+              maxLength={20}
+              required
+            />
+            <small>3–20 characters. Letters, numbers, and underscores only.</small>
+          </label>
+
+          <div className="profile-field">
+            <span className="profile-label">Choose your profile picture</span>
+
+            <div className="avatar-picker">
+              {BUILT_IN_AVATARS.map((avatar) => (
+                <button
+                  key={avatar.id}
+                  type="button"
+                  className={`avatar-choice ${avatarId === avatar.id ? "avatar-choice-selected" : ""}`}
+                  onClick={() => setAvatarId(avatar.id)}
+                  aria-label={`Choose ${avatar.id} avatar`}
+                  aria-pressed={avatarId === avatar.id}
+                >
+                  {avatar.emoji}
+                </button>
+              ))}
+            </div>
+
+            <small>Select one of the available built-in avatars.</small>
+          </div>
+
+          <label className="profile-field">
+            Bio
+            <textarea
+              value={bio}
+              onChange={(event) => setBio(event.target.value)}
+              placeholder="Write something about yourself..."
+              maxLength={160}
+              rows={4}
+            />
+            <small>{bio.length}/160 characters</small>
+          </label>
+
+          {error && <div className="error-box">{error}</div>}
+          {success && <div className="success-box">{success}</div>}
+
+          <div className="profile-modal-actions">
+            <button
+              type="button"
+              className="secondary-button"
+              onClick={onClose}
+              disabled={busy}
+            >
+              Cancel
+            </button>
+
+            <button
+              type="submit"
+              className="primary-button"
+              disabled={busy}
+            >
+              {busy ? "Saving..." : "Save Changes"}
+            </button>
+          </div>
+        </form>
+      </section>
+    </div>
+  );
+}
+
+// AUTHENTICATION SCREEN
 function AuthScreen() {
   const [mode, setMode] = useState("login");
   const [email, setEmail] = useState("");
@@ -88,11 +359,7 @@ function AuthScreen() {
 
         await updateProfile(credential.user, { displayName: normalized });
 
-        await createUserProfile(
-          credential.user.uid,
-          normalized,
-          email.trim()
-        );
+        await createUserProfile(credential.user.uid, normalized);
       } else {
         await signInWithEmailAndPassword(auth, email.trim(), password);
       }
@@ -220,40 +487,7 @@ function AuthScreen() {
   );
 }
 
-async function createUserProfile(uid, username) {
-  const normalized = cleanUsername(username);
-
-  if (!/^[a-z0-9_]{3,20}$/.test(normalized)) {
-    throw new Error(
-      "Choose a username with 3–20 letters, numbers, or underscores."
-    );
-  }
-
-  const profileRef = doc(db, "profiles", uid);
-  const usernameRef = doc(db, "usernames", normalized);
-
-  await runTransaction(db, async (transaction) => {
-    const existing = await transaction.get(usernameRef);
-
-    if (existing.exists()) {
-      throw new Error("That username is already taken. Please choose another.");
-    }
-
-    transaction.set(usernameRef, {
-      uid,
-      createdAt: serverTimestamp(),
-    });
-
-    transaction.set(profileRef, {
-      uid,
-      username: normalized,
-      displayName: `@${normalized}`,
-      avatarSeed: normalized.slice(0, 1).toUpperCase(),
-      createdAt: serverTimestamp(),
-    });
-  });
-}
-
+// GOOGLE USERNAME SETUP
 function UsernameSetup({ user, onDone }) {
   const [username, setUsername] = useState("");
   const [error, setError] = useState("");
@@ -320,6 +554,7 @@ function UsernameSetup({ user, onDone }) {
   );
 }
 
+// MAIN APP
 function App() {
   const [user, setUser] = useState(null);
   const [profile, setProfile] = useState(null);
@@ -340,6 +575,7 @@ function App() {
   const [search, setSearch] = useState("");
   const [mobilePanel, setMobilePanel] = useState(false);
   const [notice, setNotice] = useState("");
+  const [showProfileSettings, setShowProfileSettings] = useState(false);
 
   const [theme, setTheme] = useState(
     () => localStorage.getItem("whisper-theme") || "dark"
@@ -514,8 +750,6 @@ function App() {
     setSearch("");
     setMobilePanel(true);
 
-    // On desktop, the people list is already visible.
-    // On mobile, opening the drawer triggers the search-focus effect.
     if (window.matchMedia("(min-width: 761px)").matches) {
       peopleSearchRef.current?.focus();
     }
@@ -721,6 +955,14 @@ function App() {
 
   return (
     <div className={`app-shell theme-${theme}`}>
+      {showProfileSettings && (
+        <ProfileSettings
+          user={user}
+          profile={profile}
+          onClose={() => setShowProfileSettings(false)}
+          onSaved={() => setNotice("Profile updated.")}
+        />
+      )}
 
       {/* MOBILE BACKDROP */}
       {mobilePanel && (
@@ -733,7 +975,6 @@ function App() {
 
       {/* SIDEBAR */}
       <aside className={`sidebar ${mobilePanel ? "sidebar-open" : ""}`}>
-
         <div className="sidebar-top">
           <div className="brand">
             <span className="brand-mark">w</span>
@@ -817,7 +1058,11 @@ function App() {
                 }`}
                 onClick={() => openDirectChat(person)}
               >
-                <Avatar name={person.username} small />
+                <Avatar
+                  name={person.username}
+                  avatarId={person.avatarId}
+                  small
+                />
                 <span className="person-name">@{person.username}</span>
               </button>
             ))}
@@ -834,12 +1079,25 @@ function App() {
 
         {/* ACCOUNT */}
         <div className="sidebar-footer">
-          <Avatar name={profile.username} small />
+          <Avatar
+            name={profile.username}
+            avatarId={profile.avatarId}
+            small
+          />
 
           <div className="account-info">
             <strong>@{profile.username}</strong>
             <span>Anonymous member</span>
           </div>
+
+          <button
+            className="icon-button"
+            title="Edit profile"
+            aria-label="Edit profile"
+            onClick={() => setShowProfileSettings(true)}
+          >
+            ⚙
+          </button>
 
           <button
             className="icon-button"
@@ -854,10 +1112,7 @@ function App() {
 
       {/* CHAT AREA */}
       <main className="chat-main">
-
-        {/* STATIC HEADER */}
         <header className="chat-header">
-
           <div className="header-left">
             <button
               className="icon-button mobile-menu"
@@ -873,6 +1128,7 @@ function App() {
               ) : (
                 <Avatar
                   name={active.person?.username || active.name}
+                  avatarId={active.person?.avatarId}
                   small
                 />
               )}
@@ -929,6 +1185,17 @@ function App() {
 
         {/* MESSAGES */}
         <section className="message-area">
+          {active.type === "direct" && active.person?.bio && (
+            <div className="direct-profile-info">
+              <Avatar
+                name={active.person.username}
+                avatarId={active.person.avatarId}
+              />
+              <strong>@{active.person.username}</strong>
+              <p>{active.person.bio}</p>
+            </div>
+          )}
+
           <div className="welcome-block">
             <div className="welcome-symbol">
               {active.type === "room" ? active.icon || "💬" : "✉️"}
