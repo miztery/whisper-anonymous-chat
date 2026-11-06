@@ -1,4 +1,3 @@
-
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
   createUserWithEmailAndPassword,
@@ -29,7 +28,37 @@ const DEFAULT_ROOMS = [
   { id: "interests", name: "Interests", description: "Talk about what you love", icon: "✨" },
 ];
 
-const BUILT_IN_AVATARS = [
+const MALE_AVATARS = [
+  { id: "male-1", emoji: "👨🏻" },
+  { id: "male-2", emoji: "👨🏼" },
+  { id: "male-3", emoji: "👨🏽" },
+  { id: "male-4", emoji: "👨🏾" },
+  { id: "male-5", emoji: "👨🏿" },
+  { id: "male-6", emoji: "👨🏻‍🦱" },
+  { id: "male-7", emoji: "👨🏼‍🦰" },
+  { id: "male-8", emoji: "👨🏽‍🦳" },
+  { id: "male-9", emoji: "👨🏾‍🦲" },
+  { id: "male-10", emoji: "🧔🏻" },
+  { id: "male-11", emoji: "🧔🏽" },
+  { id: "male-12", emoji: "👨🏻‍🎓" },
+];
+
+const FEMALE_AVATARS = [
+  { id: "female-1", emoji: "👩🏻" },
+  { id: "female-2", emoji: "👩🏼" },
+  { id: "female-3", emoji: "👩🏽" },
+  { id: "female-4", emoji: "👩🏾" },
+  { id: "female-5", emoji: "👩🏿" },
+  { id: "female-6", emoji: "👩🏻‍🦱" },
+  { id: "female-7", emoji: "👩🏼‍🦰" },
+  { id: "female-8", emoji: "👩🏽‍🦳" },
+  { id: "female-9", emoji: "👩🏾‍🦲" },
+  { id: "female-10", emoji: "👩🏻‍🎓" },
+  { id: "female-11", emoji: "👩🏽‍💻" },
+  { id: "female-12", emoji: "👩🏾‍🎨" },
+];
+
+const PREVIOUS_AVATARS = [
   { id: "fox", emoji: "🦊" },
   { id: "panda", emoji: "🐼" },
   { id: "cat", emoji: "🐱" },
@@ -42,9 +71,28 @@ const BUILT_IN_AVATARS = [
   { id: "wolf", emoji: "🐺" },
   { id: "butterfly", emoji: "🦋" },
   { id: "octopus", emoji: "🐙" },
+  { id: "moon", emoji: "🌙" },
+  { id: "star", emoji: "⭐" },
+  { id: "flower", emoji: "🌸" },
+  { id: "rocket", emoji: "🚀" },
+  { id: "wave", emoji: "🌊" },
+  { id: "sun", emoji: "☀️" },
+  { id: "music", emoji: "🎵" },
 ];
 
-function cleanUsername(value) {
+const BUILT_IN_AVATARS = [
+  ...MALE_AVATARS,
+  ...FEMALE_AVATARS,
+  ...PREVIOUS_AVATARS,
+];
+
+const GENDER_OPTIONS = [
+  { id: "male", label: "Male", emoji: "👨" },
+  { id: "female", label: "Female", emoji: "👩" },
+  { id: "prefer-not-to-say", label: "Prefer not to say", emoji: "🙂" },
+];
+
+function cleanUsername(value = "") {
   return value.trim().replace(/^@/, "").toLowerCase();
 }
 
@@ -67,25 +115,22 @@ function friendlyError(error) {
 }
 
 function Avatar({ name = "Anonymous", avatarId, small = false }) {
-  const emoji = BUILT_IN_AVATARS.find((avatar) => avatar.id === avatarId)?.emoji;
-
+  const emoji = getAvatarEmoji(avatarId);
   const initials = name.replace(/^@/, "").slice(0, 1).toUpperCase() || "A";
 
   return (
-    <span className={`avatar ${small ? "avatar-small" : ""} ${emoji ? "avatar-emoji" : ""}`}>
+    <span className={`avatar ${small ? "avatar-small" : ""} avatar-emoji`}>
       {emoji || initials}
     </span>
   );
 }
 
-// CREATE A NEW USER PROFILE
+// CREATE USER PROFILE
 async function createUserProfile(uid, username) {
   const normalized = cleanUsername(username);
 
   if (!/^[a-z0-9_]{3,20}$/.test(normalized)) {
-    throw new Error(
-      "Choose a username with 3–20 letters, numbers, or underscores."
-    );
+    throw new Error("Choose a username with 3–20 letters, numbers, or underscores.");
   }
 
   const profileRef = doc(db, "profiles", uid);
@@ -109,16 +154,18 @@ async function createUserProfile(uid, username) {
       displayName: `@${normalized}`,
       avatarSeed: normalized.slice(0, 1).toUpperCase(),
       avatarId: "fox",
+      gender: "prefer-not-to-say",
       bio: "",
       createdAt: serverTimestamp(),
     });
   });
 }
 
-// PROFILE SETTINGS MODAL
+// PROFILE SETTINGS
 function ProfileSettings({ user, profile, onClose, onSaved }) {
   const [username, setUsername] = useState(profile.username || "");
   const [avatarId, setAvatarId] = useState(profile.avatarId || "fox");
+  const [gender, setGender] = useState(profile.gender || "prefer-not-to-say");
   const [bio, setBio] = useState(profile.bio || "");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
@@ -126,7 +173,6 @@ function ProfileSettings({ user, profile, onClose, onSaved }) {
 
   async function saveProfile(event) {
     event.preventDefault();
-
     setError("");
     setSuccess("");
 
@@ -147,6 +193,11 @@ function ProfileSettings({ user, profile, onClose, onSaved }) {
       return;
     }
 
+    if (!GENDER_OPTIONS.some((option) => option.id === gender)) {
+      setError("Please select a valid gender option.");
+      return;
+    }
+
     setBusy(true);
 
     try {
@@ -158,9 +209,13 @@ function ProfileSettings({ user, profile, onClose, onSaved }) {
         : null;
 
       await runTransaction(db, async (transaction) => {
-        // Read all required documents before writing.
-        const newUsernameSnap = await transaction.get(newUsernameRef);
+        const profileSnap = await transaction.get(profileRef);
 
+        if (!profileSnap.exists()) {
+          throw new Error("Your profile could not be found. Please sign in again.");
+        }
+
+        const newUsernameSnap = await transaction.get(newUsernameRef);
         let oldUsernameSnap = null;
 
         if (oldUsernameRef && oldUsername !== normalized) {
@@ -168,9 +223,7 @@ function ProfileSettings({ user, profile, onClose, onSaved }) {
         }
 
         if (normalized !== oldUsername && newUsernameSnap.exists()) {
-          const reservationOwner = newUsernameSnap.data().uid;
-
-          if (reservationOwner !== user.uid) {
+          if (newUsernameSnap.data().uid !== user.uid) {
             throw new Error("That username is already taken. Please choose another.");
           }
         }
@@ -193,24 +246,17 @@ function ProfileSettings({ user, profile, onClose, onSaved }) {
           displayName: `@${normalized}`,
           avatarSeed: normalized.slice(0, 1).toUpperCase(),
           avatarId,
+          gender,
           bio: bio.trim(),
         });
       });
 
-      // Keep Firebase Auth's display name consistent.
-      await updateProfile(user, {
-        displayName: normalized,
-      }).catch(() => {});
+      await updateProfile(user, { displayName: normalized }).catch(() => {});
 
       setSuccess("Your profile has been updated successfully.");
+      onSaved?.();
 
-      if (onSaved) {
-        onSaved();
-      }
-
-      window.setTimeout(() => {
-        onClose();
-      }, 700);
+      window.setTimeout(onClose, 700);
     } catch (err) {
       setError(friendlyError(err));
     } finally {
@@ -247,7 +293,6 @@ function ProfileSettings({ user, profile, onClose, onSaved }) {
         <form onSubmit={saveProfile}>
           <div className="profile-preview">
             <Avatar name={username || "Anonymous"} avatarId={avatarId} />
-
             <div>
               <strong>@{cleanUsername(username) || "yourusername"}</strong>
               <span>{bio.trim() || "No bio added yet."}</span>
@@ -268,10 +313,65 @@ function ProfileSettings({ user, profile, onClose, onSaved }) {
           </label>
 
           <div className="profile-field">
-            <span className="profile-label">Choose your profile picture</span>
+            <span className="profile-label">Gender</span>
 
+            <div className="gender-picker">
+              {GENDER_OPTIONS.map((option) => (
+                <button
+                  key={option.id}
+                  type="button"
+                  className={`gender-choice ${gender === option.id ? "gender-choice-selected" : ""}`}
+                  onClick={() => setGender(option.id)}
+                  aria-pressed={gender === option.id}
+                >
+                  <span>{option.emoji}</span>
+                  {option.label}
+                </button>
+              ))}
+            </div>
+            <small>Your gender setting does not restrict your avatar choices.</small>
+          </div>
+
+          <div className="profile-field">
+            <span className="profile-label">Male avatars</span>
             <div className="avatar-picker">
-              {BUILT_IN_AVATARS.map((avatar) => (
+              {MALE_AVATARS.map((avatar) => (
+                <button
+                  key={avatar.id}
+                  type="button"
+                  className={`avatar-choice ${avatarId === avatar.id ? "avatar-choice-selected" : ""}`}
+                  onClick={() => setAvatarId(avatar.id)}
+                  aria-label={`Choose male avatar ${avatar.id}`}
+                  aria-pressed={avatarId === avatar.id}
+                >
+                  {avatar.emoji}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          <div className="profile-field">
+            <span className="profile-label">Female avatars</span>
+            <div className="avatar-picker">
+              {FEMALE_AVATARS.map((avatar) => (
+                <button
+                  key={avatar.id}
+                  type="button"
+                  className={`avatar-choice ${avatarId === avatar.id ? "avatar-choice-selected" : ""}`}
+                  onClick={() => setAvatarId(avatar.id)}
+                  aria-label={`Choose female avatar ${avatar.id}`}
+                  aria-pressed={avatarId === avatar.id}
+                >
+                  {avatar.emoji}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          <div className="profile-field">
+            <span className="profile-label">Previous avatars</span>
+            <div className="avatar-picker">
+              {PREVIOUS_AVATARS.map((avatar) => (
                 <button
                   key={avatar.id}
                   type="button"
@@ -284,8 +384,7 @@ function ProfileSettings({ user, profile, onClose, onSaved }) {
                 </button>
               ))}
             </div>
-
-            <small>Select one of the available built-in avatars.</small>
+            <small>You can choose any avatar, regardless of your gender setting.</small>
           </div>
 
           <label className="profile-field">
@@ -313,11 +412,7 @@ function ProfileSettings({ user, profile, onClose, onSaved }) {
               Cancel
             </button>
 
-            <button
-              type="submit"
-              className="primary-button"
-              disabled={busy}
-            >
+            <button type="submit" className="primary-button" disabled={busy}>
               {busy ? "Saving..." : "Save Changes"}
             </button>
           </div>
@@ -346,19 +441,11 @@ function AuthScreen() {
         const normalized = cleanUsername(username);
 
         if (!/^[a-z0-9_]{3,20}$/.test(normalized)) {
-          throw new Error(
-            "Username must be 3–20 characters and use only letters, numbers, or underscores."
-          );
+          throw new Error("Username must be 3–20 characters and use only letters, numbers, or underscores.");
         }
 
-        const credential = await createUserWithEmailAndPassword(
-          auth,
-          email.trim(),
-          password
-        );
-
+        const credential = await createUserWithEmailAndPassword(auth, email.trim(), password);
         await updateProfile(credential.user, { displayName: normalized });
-
         await createUserProfile(credential.user.uid, normalized);
       } else {
         await signInWithEmailAndPassword(auth, email.trim(), password);
@@ -376,8 +463,7 @@ function AuthScreen() {
 
     try {
       const result = await signInWithPopup(auth, googleProvider);
-      const profileRef = doc(db, "profiles", result.user.uid);
-      const profileSnap = await getDoc(profileRef);
+      const profileSnap = await getDoc(doc(db, "profiles", result.user.uid));
 
       if (!profileSnap.exists()) {
         sessionStorage.setItem("needsUsername", "true");
@@ -398,7 +484,6 @@ function AuthScreen() {
         </div>
 
         <div className="eyebrow">A LITTLE MORE YOU, A LITTLE LESS IDENTITY</div>
-
         <h1>{mode === "login" ? "Welcome back." : "Find your voice."}</h1>
 
         <p className="muted auth-intro">
@@ -409,9 +494,7 @@ function AuthScreen() {
           <span className="google-g">G</span> Continue with Google
         </button>
 
-        <div className="or-divider">
-          <span>or use your email</span>
-        </div>
+        <div className="or-divider"><span>or use your email</span></div>
 
         <form onSubmit={submit} className="auth-form">
           {mode === "register" && (
@@ -419,15 +502,13 @@ function AuthScreen() {
               Anonymous username
               <input
                 value={username}
-                onChange={(e) => setUsername(e.target.value)}
+                onChange={(event) => setUsername(event.target.value)}
                 placeholder="e.g. moonwalker27"
                 minLength={3}
                 maxLength={20}
                 required
               />
-              <small>
-                3–20 letters, numbers, or underscores. This is your public identity.
-              </small>
+              <small>3–20 letters, numbers, or underscores. This is your public identity.</small>
             </label>
           )}
 
@@ -436,7 +517,7 @@ function AuthScreen() {
             <input
               type="email"
               value={email}
-              onChange={(e) => setEmail(e.target.value)}
+              onChange={(event) => setEmail(event.target.value)}
               placeholder="you@example.com"
               autoComplete="email"
               required
@@ -448,7 +529,7 @@ function AuthScreen() {
             <input
               type="password"
               value={password}
-              onChange={(e) => setPassword(e.target.value)}
+              onChange={(event) => setPassword(event.target.value)}
               placeholder="At least 8 characters"
               autoComplete={mode === "login" ? "current-password" : "new-password"}
               minLength={8}
@@ -459,11 +540,7 @@ function AuthScreen() {
           {error && <div className="error-box">{error}</div>}
 
           <button className="primary-button full-button" disabled={busy}>
-            {busy
-              ? "Please wait…"
-              : mode === "login"
-                ? "Log in"
-                : "Create account"}
+            {busy ? "Please wait…" : mode === "login" ? "Log in" : "Create account"}
           </button>
         </form>
 
@@ -529,7 +606,7 @@ function UsernameSetup({ user, onDone }) {
             Anonymous username
             <input
               value={username}
-              onChange={(e) => setUsername(e.target.value)}
+              onChange={(event) => setUsername(event.target.value)}
               placeholder="e.g. starlight_08"
               minLength={3}
               maxLength={20}
@@ -538,7 +615,6 @@ function UsernameSetup({ user, onDone }) {
           </label>
 
           <small>3–20 letters, numbers, or underscores.</small>
-
           {error && <div className="error-box">{error}</div>}
 
           <button className="primary-button full-button" disabled={busy}>
@@ -584,7 +660,6 @@ function App() {
   const bottomRef = useRef(null);
   const peopleSearchRef = useRef(null);
 
-  // AUTHENTICATION AND PROFILE
   useEffect(() => {
     if (!auth) {
       setAuthReady(true);
@@ -638,9 +713,7 @@ function App() {
       q,
       (snapshot) => {
         setPeople(
-          snapshot.docs
-            .map((d) => d.data())
-            .filter((p) => p.uid !== user.uid)
+          snapshot.docs.map((d) => d.data()).filter((p) => p.uid !== user.uid)
         );
       },
       (error) => setNotice(friendlyError(error))
@@ -656,11 +729,7 @@ function App() {
     return onSnapshot(
       q,
       async (snapshot) => {
-        const found = snapshot.docs.map((d) => ({
-          id: d.id,
-          ...d.data(),
-        }));
-
+        const found = snapshot.docs.map((d) => ({ id: d.id, ...d.data() }));
         const missing = DEFAULT_ROOMS.filter(
           (room) => !found.some((item) => item.id === room.id)
         );
@@ -698,54 +767,35 @@ function App() {
         ? collection(db, "rooms", active.id, "messages")
         : collection(db, "chats", active.id, "messages");
 
-    const q = query(
-      messageCollection,
-      orderBy("createdAt", "asc"),
-      limit(100)
-    );
+    const q = query(messageCollection, orderBy("createdAt", "asc"), limit(100));
 
     return onSnapshot(
       q,
       (snapshot) => {
-        setMessages(
-          snapshot.docs.map((d) => ({
-            id: d.id,
-            ...d.data(),
-          }))
-        );
+        setMessages(snapshot.docs.map((d) => ({ id: d.id, ...d.data() })));
       },
       (error) => setNotice(friendlyError(error))
     );
   }, [user, profile, active]);
 
-  // SCROLL TO LATEST MESSAGE
   useEffect(() => {
-    bottomRef.current?.scrollIntoView({
-      behavior: "smooth",
-      block: "end",
-    });
+    bottomRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
   }, [messages]);
 
-  // FOCUS PEOPLE SEARCH WHEN THE MOBILE DRAWER OPENS
   useEffect(() => {
     if (!mobilePanel) return;
 
-    const timer = window.setTimeout(() => {
-      peopleSearchRef.current?.focus();
-    }, 250);
-
+    const timer = window.setTimeout(() => peopleSearchRef.current?.focus(), 250);
     return () => window.clearTimeout(timer);
   }, [mobilePanel]);
 
   const filteredPeople = useMemo(() => {
     const term = search.trim().toLowerCase();
-
     return people.filter((person) =>
       (person.username || "").toLowerCase().includes(term)
     );
   }, [people, search]);
 
-  // NEW CONVERSATION
   function startNewConversation() {
     setSearch("");
     setMobilePanel(true);
@@ -755,7 +805,6 @@ function App() {
     }
   }
 
-  // OPEN PRIVATE CHAT
   async function openDirectChat(person) {
     if (!user || !person?.uid || person.uid === user.uid) return;
 
@@ -765,10 +814,7 @@ function App() {
     try {
       await setDoc(
         doc(db, "chats", chatId),
-        {
-          members,
-          updatedAt: serverTimestamp(),
-        },
+        { members, updatedAt: serverTimestamp() },
         { merge: true }
       );
 
@@ -787,12 +833,10 @@ function App() {
     }
   }
 
-  // SEND MESSAGE
   async function sendMessage(event) {
     event.preventDefault();
 
     const body = draft.trim();
-
     if (!body || body.length > 2000 || !user || !profile) return;
 
     setDraft("");
@@ -826,12 +870,8 @@ function App() {
     }
   }
 
-  // CREATE PUBLIC ROOM
   async function createRoom() {
-    const name = window.prompt(
-      "Name your public room (2–30 characters):"
-    );
-
+    const name = window.prompt("Name your public room (2–30 characters):");
     if (!name?.trim()) return;
 
     const clean = name.trim().replace(/\s+/g, " ").slice(0, 30);
@@ -855,13 +895,7 @@ function App() {
         createdAt: serverTimestamp(),
       });
 
-      setActive({
-        type: "room",
-        id,
-        name: clean,
-        icon: "💬",
-      });
-
+      setActive({ type: "room", id, name: clean, icon: "💬" });
       setMobilePanel(false);
     } catch (error) {
       setNotice(friendlyError(error));
@@ -869,11 +903,7 @@ function App() {
   }
 
   function selectRoom(room) {
-    setActive({
-      type: "room",
-      ...room,
-    });
-
+    setActive({ type: "room", ...room });
     setMobilePanel(false);
     setDraft("");
     setNotice("");
@@ -881,7 +911,6 @@ function App() {
 
   function toggleTheme() {
     const next = theme === "dark" ? "light" : "dark";
-
     setTheme(next);
     localStorage.setItem("whisper-theme", next);
   }
@@ -905,7 +934,6 @@ function App() {
           </div>
 
           <h1>Connect your Firebase project</h1>
-
           <p>
             The website source is ready. Add your Firebase Web App settings
             to <code>.env.local</code> to enable registration and chat.
@@ -964,7 +992,6 @@ function App() {
         />
       )}
 
-      {/* MOBILE BACKDROP */}
       {mobilePanel && (
         <button
           className="mobile-backdrop"
@@ -973,7 +1000,6 @@ function App() {
         />
       )}
 
-      {/* SIDEBAR */}
       <aside className={`sidebar ${mobilePanel ? "sidebar-open" : ""}`}>
         <div className="sidebar-top">
           <div className="brand">
@@ -990,14 +1016,10 @@ function App() {
           </button>
         </div>
 
-        <button
-          className="new-chat-button"
-          onClick={startNewConversation}
-        >
+        <button className="new-chat-button" onClick={startNewConversation}>
           <span>＋</span> New conversation
         </button>
 
-        {/* PUBLIC ROOMS */}
         <div className="side-section">
           <div className="section-heading">
             <span>PUBLIC ROOMS</span>
@@ -1015,9 +1037,7 @@ function App() {
             <button
               key={room.id}
               className={`nav-item ${
-                active.type === "room" && active.id === room.id
-                  ? "selected"
-                  : ""
+                active.type === "room" && active.id === room.id ? "selected" : ""
               }`}
               onClick={() => selectRoom(room)}
             >
@@ -1027,7 +1047,6 @@ function App() {
           ))}
         </div>
 
-        {/* PEOPLE */}
         <div className="side-section people-section">
           <div className="section-heading">
             <span>PEOPLE</span>
@@ -1040,7 +1059,7 @@ function App() {
               ref={peopleSearchRef}
               id="people-search"
               value={search}
-              onChange={(e) => setSearch(e.target.value)}
+              onChange={(event) => setSearch(event.target.value)}
               placeholder="Find someone…"
               aria-label="Search people"
             />
@@ -1051,39 +1070,27 @@ function App() {
               <button
                 key={person.uid}
                 className={`person-item ${
-                  active.type === "direct" &&
-                  active.person?.uid === person.uid
+                  active.type === "direct" && active.person?.uid === person.uid
                     ? "selected"
                     : ""
                 }`}
                 onClick={() => openDirectChat(person)}
               >
-                <Avatar
-                  name={person.username}
-                  avatarId={person.avatarId}
-                  small
-                />
+                <Avatar name={person.username} avatarId={person.avatarId} small />
                 <span className="person-name">@{person.username}</span>
               </button>
             ))}
 
             {filteredPeople.length === 0 && (
               <p className="empty-small">
-                {search.trim()
-                  ? "No matching people found."
-                  : "No people found yet."}
+                {search.trim() ? "No matching people found." : "No people found yet."}
               </p>
             )}
           </div>
         </div>
 
-        {/* ACCOUNT */}
         <div className="sidebar-footer">
-          <Avatar
-            name={profile.username}
-            avatarId={profile.avatarId}
-            small
-          />
+          <Avatar name={profile.username} avatarId={profile.avatarId} small />
 
           <div className="account-info">
             <strong>@{profile.username}</strong>
@@ -1110,7 +1117,6 @@ function App() {
         </div>
       </aside>
 
-      {/* CHAT AREA */}
       <main className="chat-main">
         <header className="chat-header">
           <div className="header-left">
@@ -1136,11 +1142,8 @@ function App() {
 
             <div className="header-title">
               <h2>
-                {active.type === "room"
-                  ? `# ${active.name}`
-                  : active.name}
+                {active.type === "room" ? `# ${active.name}` : active.name}
               </h2>
-
               <p>
                 {active.type === "room"
                   ? "Public room · Everyone is welcome"
@@ -1175,7 +1178,6 @@ function App() {
           </div>
         </header>
 
-        {/* NOTIFICATIONS */}
         {notice && (
           <div className="notice-bar">
             <span>{notice}</span>
@@ -1183,7 +1185,6 @@ function App() {
           </div>
         )}
 
-        {/* MESSAGES */}
         <section className="message-area">
           {active.type === "direct" && active.person?.bio && (
             <div className="direct-profile-info">
@@ -1218,20 +1219,27 @@ function App() {
 
           {messages.map((message) => {
             const mine = message.senderId === user.uid;
+            const senderProfile = mine
+              ? profile
+              : people.find((person) => person.uid === message.senderId);
 
             return (
               <div
                 key={message.id}
                 className={`message-row ${mine ? "mine" : ""}`}
               >
-                <Avatar name={message.senderName} small />
+                <Avatar
+                  name={message.senderName}
+                  avatarId={senderProfile?.avatarId}
+                  small
+                />
 
                 <div className="message-content">
                   <div className="message-meta">
                     <strong>
                       {mine
                         ? "You"
-                        : `@${message.senderName || "anonymous"}`}
+                        : `@${senderProfile?.username || message.senderName || "anonymous"}`}
                     </strong>
 
                     <span>
@@ -1244,9 +1252,7 @@ function App() {
                     </span>
                   </div>
 
-                  <div className="message-bubble">
-                    {message.text}
-                  </div>
+                  <div className="message-bubble">{message.text}</div>
                 </div>
               </div>
             );
@@ -1255,12 +1261,11 @@ function App() {
           <div ref={bottomRef} />
         </section>
 
-        {/* MESSAGE COMPOSER */}
         <form className="composer" onSubmit={sendMessage}>
           <div className="composer-inner">
             <input
               value={draft}
-              onChange={(e) => setDraft(e.target.value)}
+              onChange={(event) => setDraft(event.target.value)}
               placeholder={`Message ${
                 active.type === "room" ? "#" + active.name : active.name
               }…`}
@@ -1268,9 +1273,7 @@ function App() {
               aria-label="Write a message"
             />
 
-            <span className="char-count">
-              {draft.length}/2000
-            </span>
+            <span className="char-count">{draft.length}/2000</span>
 
             <button
               className="send-button"
